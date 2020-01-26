@@ -1,0 +1,271 @@
+---
+title: "GARCH Analysis using Weekly Gold Prices in Indian Rupee"
+author: "Preeti R Dasari"
+date:   "28/11/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+This report’s aim is to analyze the trends in weekly prices of gold as traded in Indian Rupee (INR). 
+
+Gold was a traditional form of investment in India and can be viewed as a symbol of financial stability.  As the Indian central government rolls out its plan to have the citizens declare their gold assets in their income tax statements, the commodity has been under scrutiny. 
+
+The intention of this study is to observe changes in gold prices through volatility and attempt a model that will take into account external shocks. Therefore, I will be using a GARCH model to fit this data. 
+
+
+## Required Packages
+
+```{r, include=FALSE}
+library(rugarch)
+library(tseries)
+library(xts)
+library(fGarch)
+library(forecast)
+library(kableExtra)
+library(readxl)
+```
+
+```{r, eval=FALSE}
+library(rugarch)
+library(tseries)
+library(xts)
+library(fGarch)
+library(kableExtra)
+```
+
+
+## Importing Data
+
+```{r, include=FALSE}
+gold <- read.csv("/Users/PreetiRDasari/Desktop/Baruch/Fall 2019/STA 9701 - Time Series/Project 2/Wkly_Gold_Prices.csv")
+```
+
+```{r, eval=FALSE}
+gold <- read.csv("Wkly_Gold_Prices.csv")
+```
+
+```{r}
+names(gold)
+nrow(gold)
+```
+
+## Data Selection
+
+For the purpose of this analysis, I selected weekly gold prices in INR from January 1998 to November 2019 (nrows = 1143). I treated the data from Jan 1998 to Dec 2018 as the training subset and will use the fitted model to test prediction against weekly gold prices in 2019 (nrows = 46).
+
+
+## Exploratory Analysis 
+
+
+```{r}
+gold$Name <- as.Date(as.character(gold$Name), format = c("%m/%d/%y"))
+gold.train <- gold[1:1096,]
+
+
+plot(gold.train, type='l', ylab = "Weekly Closing Price", xlab = "Year", main="Weekly Gold Prices from 1998 - 2018 ", col = 'red')
+```
+
+From the above plot, we can observe that the weekly gold prices are not stable and are rising constantly. There is also volatility observed between 2010 and 2012. Hence, the dataset does not appear to be stationary. 
+
+
+## Data Transformation
+
+
+```{r}
+gold_ts <- ts(gold.train[,2])   #Transforming the data into a time series data set
+BoxCox.lambda(gold_ts)
+```
+
+The Box Cox test for this dataset gives a lambda value of approximately -0.024, indicating there is need for transformation. In order to make the data stationary, I calculated the weekly returns and transformed the data with log.
+
+
+```{r}
+gold_log <- log(gold_ts/lag(gold_ts,-1))
+plot(gold_log, type='l', ylab = "Weekly Log Returns", xlab = "Year", main="Weekly Returns on Gold Price from 1998 - 2018 ", col = 'blue')
+```
+
+As we can observe, the transformed data is less volatile than the raw data. The mean of weekly log returns for gold is close to zero and appears to be stationary. 
+
+For the next step, I checked ACF and PACF of the data to check serial correlation, dependence to see if there is reason to consider ARCH effects. 
+
+
+## ACF and PACF Analysis 
+
+As the aim for this analysis is to fit a generalized ARCH model, I checked for correlation, dependence by looking at the ACF and PACF charts, and by conducting Ljung Box tests. 
+
+
+### Testing for Serial Correlation
+
+```{r}
+par(mfrow =c(2 ,1),mar=c(3,3,3,3), mgp=c(2, 1, 0))
+acf<- acf(gold_log, main = "ACF of Weekly Log Returns for Gold")
+pacf(gold_log, main = "PACF of Weekly Log Returns for Gold")
+```
+
+The ACF for Weekly Log Returns cuts off sharply after lag 0 and only crosses the significant threshold at lag 5. The PACF spikes at several lags and very slowly seems to be tailing off to zero. 
+
+### Ljung Box Test for Correlation 
+
+```{r}
+Box.test(gold_log, lag=1, type="Ljung")
+Box.test(gold_log, lag=5, type="Ljung")
+```
+
+The Ljung Box test p-value at lag 1 is 0.6469. We accept the null hypothesis that there is no serial correlation at any reasonable significance level. However, the Box test’s p-value for lag 5 is 0.01418. At 5% confidence level, we reject the null hypothesis; there is evidence of correlation at lag 5. Hence, one potential model would be to fit MA(5) model with GARCH to account for the correlation. 
+
+
+### Testing for Serial Dependence
+
+
+```{r}
+par(mfrow =c(2, 2),mar=c(3,3,3,3), mgp=c(2, 1, 0))
+acf(abs(gold_log), main = "ACF of Abs Log Returns for Gold")
+pacf(abs(gold_log), main = "PACF of Abs Log Returns for Gold")
+acf((gold_log^2), main = "ACF of Sqd Log Returns for Gold")
+pacf((gold_log^2), main = "PACF of Sqd Log Returns for Gold")
+```
+
+
+### Ljung Box Test for Dependence 
+
+
+```{r}
+Box.test(abs(gold_log), lag=1, type="Ljung")
+Box.test(abs(gold_log), lag=5, type="Ljung")
+
+Box.test((gold_log^2), lag=1, type="Ljung")
+Box.test((gold_log^2), lag=5, type="Ljung")
+```
+
+
+
+The ACFs for both absolute value and squared of log returns spike at several lags. The Ljung Box tests all produced a p-value that is very close to zero. Hence, I reject the null hypothesis; there is evidence of serial dependence. 
+
+The next step is to plot the ACF and PACF of squared demeaned log returns to check for ARCH effects and decide the order of my GARCH model. 
+
+
+## Testing for ARCH Effects
+
+
+```{r}
+gold_dm <- gold_log - mean(gold_log)   # demeaning the series for ARCH 
+```
+
+### ACF and PACF plots for ARCH Effects
+
+```{r}
+par(mfrow =c(2 ,1),mar=c(3,3,3,3), mgp=c(2, 1, 0))
+acf((gold_dm^2), main = "ACF of Sqd Demeaned Log Returns for Gold")
+pacf((gold_dm^2), main = "PACF of Sqd Demeanded Log Returns for Gold")
+```
+
+
+### Box Test for ARCH Effect 
+
+```{r}
+Box.test((gold_dm^2), lag=1, type="Ljung")
+Box.test((gold_dm^2), lag=5, type="Ljung")
+```
+Again, the ACF for the demeaned series spikes at several lags beyond the significance threshold. The Ljung Box test for the squared demeaned log returns produced a p-value that is close to zero. I can reject the null hypothesis for the Box test and state that there is evidence of ARCH effect. 
+
+## Potential Models
+
+1.  When I initially plotted the raw data against a normal curve, it did not seem to fit the distribution adequately. Hence, my *first* potential model is *GARCH(1,1) with t distribution* to account for possible heavy tails. 
+
+2.	The ACF for squared demeaned log returns spikes at every 4th lag. I wanted to check if this influences the lagged variance in my model. Hence, the *second* candidate model is GARCH(1,4) with t-dist.
+
+3.  The Ljung Box test at lag 5 for weekly log returns provided evidence of correlation. I add a MA(5) model to account for this correlation. Hence, the *third* candidate is MA(5) – GARCH (1,1) model. 
+
+4.  Similar to the third model, I added MA(5) to GARCH (1,4) to account for correlation. 
+
+## Choosing Models based on Information Criteria
+
+```{r, echo=FALSE, warning=FALSE}
+models_fit <- read_excel("models_fit.xlsx")
+kable(models_fit) %>%
+  kable_styling(bootstrap_options = "striped", full_width = F, position = "left")
+```
+
+The MA(5) - GARCH(1,1) model with t-distribution has the optimal Akaike and Bayseian Information Criteria.  
+
+```{r}
+garch.ma5 = ugarchspec(variance.model=list(garchOrder=c(1,1)), mean.model=list(armaOrder=c(0,5)), 
+                    distribution.model = "std")
+garch.ma5 = ugarchfit(spec=garch.ma5, data=gold_log)
+garch.ma5
+
+```
+
+After fitting MA(5)-GARCH(1,1), I noticed that only the second and fifth lag coefficients were significant. Hence, I include a fifth potential model – Reduced MA(5) with GARCH (1,1) (t-dist).
+
+
+## Reduced MA(5)- GARCH(1,1) with t distributed errors 
+
+
+```{r}
+fixed.p <- list(ma1 = 0, #  theta_1 (MA(5) parameter of mu_t)
+                ma2 = -0.067, #  theta_2 (MA(5) parameter of mu_t)
+                ma3 = 0, #  theta_3 (MA(5) parameter of mu_t)
+                ma4 = 0, #  theta_4 (MA(5) parameter of mu_t)
+                ma5 = -0.088105) #  theta_5 (MA(5) parameter of mu_t)
+                
+armaOrder <- c(0,5) # ARMA order
+garchOrder <- c(1,1) # GARCH order
+varModel <- list(model = "GARCH", garchOrder = garchOrder)
+garch.red <- ugarchspec(variance.model=list(garchOrder=c(1,1)), mean.model = list(armaOrder = armaOrder),
+                   fixed.pars = fixed.p, distribution.model = "std") # t standardized residuals
+
+garch.fit = ugarchfit(spec=garch.red, data=gold_log)
+garch.fit
+```
+
+AIC for Reduced MA(5) - GARCH(1,1) with t-dist is **-4.8422** and BIC is **-4.8194**. As can be observed from the previous table, the Reduced MA(5) with GARCH (1,1) model had the least AIC and BIC penalties. Hence, this is the model I used to fit my data. 
+
+## Diagnostics
+
+```{r}
+plot(garch.fit, which="all")
+```
+
+
+The QQ plot for the standardized residuals shows the t-distribution is adequate fit for the conditional distribution. There are a few outliers on the right side of the distribution, indicating that they might be effected by some skewness. 
+
+The ACF of standardized residuals mostly shows a pattern of white noise. It spikes at lag 16 and 21, indicating that the mean equation might not be adequate. 
+
+The ACF of squared standardized residuals are also mostly white noise, except for a few spikes. The volatility equation might also not be entirely adequate for this data. 
+
+
+## Forecasting Volatility
+
+```{r}
+gold_full_ts <- ts(gold[,2])   # converting the full data set into a time series
+
+gold_full_log <- log(gold_full_ts/lag(gold_full_ts,-1))
+
+garch_full = ugarchspec(variance.model=list(garchOrder=c(1,1)), mean.model = list(armaOrder = armaOrder),
+                        fixed.pars = fixed.p, distribution.model = "std")
+garch_full_fit = ugarchfit(spec=garch_full, data=gold_full_log)
+forecast = ugarchforecast(garch_full_fit, n.ahead=46, data = NULL)
+
+
+garch_spec = getspec(garch_full_fit)
+setfixed(garch_spec) = as.list(coef(garch_full_fit))
+forecast1 = ugarchforecast(garch_spec, n.ahead=46, data = gold_full_log, n.roll = 1043, out.sample = 1096)
+plot(forecast1, which=4)
+```
+
+
+The forecasted volatility by my model fits the series adequately. However, there are a few shocks in 2006 and 2010 that the model does not capture. 
+
+To further improve the fit, there are a few key issues that I could troubleshoot in the future:
+
+1.	The ACF of standardized residuals and squared standardized residuals showed that the mean and volatility equations could be improved. 
+a.	The PACF of weekly log returns spike at lag 5, lag 16 and lag 21. I would consider adding an AR order, in addition to using reduced MA(5) with GARCH, to boost the mean equation.  
+b.	The PACF of squared demeaned log returns spike at lags 7, 8, 9, 16 and so on. I would explore changing the order of lagged variance in my GARCH model to account for this effect. 
+
+2.	The weekly prices for gold were recorded in Indian Rupee. Some of the shocks observed could’ve been due to changes in the currency exchange rate in the global market, instead of the commodity itself. For further analysis, I could fit a multivariate GARCH model by using a basket of different currencies.  
+
